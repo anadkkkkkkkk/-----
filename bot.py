@@ -109,6 +109,7 @@ if len(df_5m) < 100:
     send_telegram("❌ فشل تحميل البيانات")
     raise SystemExit
 
+# إعادة عينة للفريمات الأعلى
 df_4h = df_5m.resample('4h').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'})
 df_1h = df_5m.resample('1h').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'})
 df_5m = compute_features(df_5m)
@@ -158,9 +159,12 @@ prob = (prob_xgb + prob_rf + prob_cat) / 3
 
 price = latest_5m['close']
 atr = max(latest_5m['atr_14'], 0.01*price)
-trend_4h = 1 if price > df_4h['ema_200'].iloc[-1] else -1
-adx_ok = (len(df_1h) > 0 and df_1h["adx"].iloc[-1] > 22)
-volume_ok = (len(df_1h) > 0 and df_1h["volume_ratio"].iloc[-1] > 0.8)
+
+# فحوصات الأمان للفريمات الأعلى
+adx_ok = (len(df_1h) > 0 and df_1h['adx'].iloc[-1] > 22)
+volume_ok = (len(df_1h) > 0 and df_1h['volume_ratio'].iloc[-1] > 0.8)
+trend_4h = 1 if (len(df_4h) > 0 and price > df_4h['ema_200'].iloc[-1]) else -1
+
 macd_cross_up = latest_5m['macd'] > 0 and (df_5m['macd'].iloc[i_5m-1] if i_5m>0 else 0) <= 0
 buy_signal = (trend_4h==1 and latest_5m['ema_9'] > latest_5m['ema_21'] and macd_cross_up and adx_ok and volume_ok and prob >= MIN_CONFIDENCE)
 sell_signal = (trend_4h==-1 and latest_5m['ema_9'] < latest_5m['ema_21'] and latest_5m['macd'] < 0)
