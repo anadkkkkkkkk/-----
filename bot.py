@@ -28,7 +28,7 @@ MODEL_RF = 'gold_rf.pkl'; MODEL_CAT = 'gold_cat.cbm'
 CAPITAL_FILE = 'capital_mtf.txt'; STATE_FILE = 'state.txt'
 
 def fetch_ccxt(symbol, timeframe='5m', limit=500):
-    exchanges = [ccxt.binance(), ccxt.kraken()]
+    exchanges = [ccxt.bybit(), ccxt.kraken()]
     for ex in exchanges:
         try:
             if ex.has['fetchOHLCV']:
