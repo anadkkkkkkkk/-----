@@ -2,6 +2,4 @@ xgboost
 pandas
 yfinance
 scikit-learn
-tensorflow
 requests
-catboost
