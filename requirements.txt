@@ -5,3 +5,4 @@ catboost
 requests
 tensorflow-cpu
 ccxt
+yfinance
