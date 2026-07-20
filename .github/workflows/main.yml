@@ -15,10 +15,9 @@ jobs:
         run: pip install -r requirements.txt
       - name: Run bot
         run: python bot.py
-      - name: Commit state changes
+      - name: Commit state changes (if any)
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
-          git add state.txt capital_mtf.txt gold_mtf_xgb.json gold_lstm_mtf.h5
-          git commit -m "Update state" || true
-          git push
+          git add -A
+          git diff --cached --quiet || (git commit -m "Update state" && git push)
