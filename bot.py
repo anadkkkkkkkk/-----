@@ -1,6 +1,11 @@
 import numpy as np, pandas as pd, yfinance as yf, datetime, time, requests, os
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import MinMaxScaler
 import xgboost as xgb
+from catboost import CatBoostClassifier
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -10,17 +15,27 @@ def send_telegram(msg):
     try: requests.post(f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage', data={'chat_id': CHAT_ID, 'text': msg}, timeout=10)
     except: pass
 
-print("🥇 بوت الذهب – XGBoost + RandomForest + Order Block")
-send_telegram("🟢 بوت الذهب الخفيف بدأ")
+print("🥇 بوت الذهب الكامل – 4 نماذج ذكاء اصطناعي (XGBoost + LSTM + CatBoost + RandomForest)")
+send_telegram("🟢 بوت الذهب الكامل (4 نماذج) بدأ")
 
 SYMBOL = "GC=F"
-INITIAL_CAPITAL = 10000.0; RISK_PER_TRADE = 0.01; LEVERAGE = 5
-STOP_ATR_MULT = 1.5; TP_ATR_MULT = 3.0; MIN_CONFIDENCE = 0.55
-MODEL_XGB = 'gold_xgb.json'; MODEL_RF = 'gold_rf.pkl'
-CAPITAL_FILE = 'capital_mtf.txt'; STATE_FILE = 'state.txt'
+INITIAL_CAPITAL = 10000.0
+RISK_PER_TRADE = 0.01
+LEVERAGE = 5
+STOP_ATR_MULT = 1.5
+TP_ATR_MULT = 3.0
+MIN_CONFIDENCE = 0.55
+LSTM_LOOKBACK = 30
+MODEL_XGB = 'gold_xgb.json'
+MODEL_LSTM = 'gold_lstm.h5'
+MODEL_RF = 'gold_rf.pkl'
+MODEL_CAT = 'gold_cat.cbm'
+CAPITAL_FILE = 'capital_mtf.txt'
+STATE_FILE = 'state.txt'
 
 def fetch_data(interval='5m', days=90):
-    end = datetime.datetime.now(); start = end - datetime.timedelta(days=days)
+    end = datetime.datetime.now()
+    start = end - datetime.timedelta(days=days)
     df = yf.download(SYMBOL, start=start, end=end, interval=interval, progress=False)
     if df.empty: return df
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.droplevel(1)
@@ -80,15 +95,41 @@ if df_5m.empty or df_4h.empty:
     raise SystemExit
 
 features = ['ema_9','ema_21','macd','macd_signal','atr_14','adx','volume_ratio','trend','close']
+lstm_features = ['close', 'ema_9', 'ema_21', 'macd', 'rsi', 'atr_14', 'adx', 'volume_ratio']
 
 # XGBoost
 if os.path.exists(MODEL_XGB):
-    xgb_model = xgb.XGBClassifier(); xgb_model.load_model(MODEL_XGB)
+    xgb_model = xgb.XGBClassifier()
+    xgb_model.load_model(MODEL_XGB)
     xgb_model.fit(df_5m[features], df_5m['target'], xgb_model=xgb_model.get_booster())
 else:
     xgb_model = xgb.XGBClassifier(n_estimators=300, max_depth=6, learning_rate=0.05)
     xgb_model.fit(df_5m[features], df_5m['target'])
 xgb_model.save_model(MODEL_XGB)
+
+# LSTM
+if os.path.exists(MODEL_LSTM):
+    lstm_model = tf.keras.models.load_model(MODEL_LSTM)
+else:
+    lstm_model = Sequential([
+        LSTM(50, return_sequences=True, input_shape=(LSTM_LOOKBACK, len(lstm_features))),
+        Dropout(0.2),
+        LSTM(30),
+        Dropout(0.2),
+        Dense(1, activation='sigmoid')
+    ])
+    lstm_model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+scaler = MinMaxScaler()
+scaled = scaler.fit_transform(df_5m[lstm_features])
+X_lstm, y_lstm = [], []
+for i in range(LSTM_LOOKBACK, len(scaled)):
+    X_lstm.append(scaled[i-LSTM_LOOKBACK:i])
+    y_lstm.append(df_5m['target'].iloc[i])
+X_lstm, y_lstm = np.array(X_lstm), np.array(y_lstm)
+if len(X_lstm) > 10:
+    lstm_model.fit(X_lstm, y_lstm, epochs=10, batch_size=32, verbose=0)
+    lstm_model.save(MODEL_LSTM)
 
 # RandomForest
 import joblib
@@ -100,16 +141,44 @@ else:
     rf_model.fit(df_5m[features], df_5m['target'])
 joblib.dump(rf_model, MODEL_RF)
 
-capital = INITIAL_CAPITAL; position = 0; entry = 0; sl = 0; tp = 0; max_loss = 0
+# CatBoost
+if os.path.exists(MODEL_CAT):
+    cat_model = CatBoostClassifier()
+    cat_model.load_model(MODEL_CAT)
+    cat_model.fit(df_5m[features], df_5m['target'], init_model=cat_model)
+else:
+    cat_model = CatBoostClassifier(iterations=300, depth=6, learning_rate=0.05, verbose=0)
+    cat_model.fit(df_5m[features], df_5m['target'])
+cat_model.save_model(MODEL_CAT)
+
+# الحالة السابقة
+capital = INITIAL_CAPITAL
+position = 0
+entry = 0
+sl = 0
+tp = 0
+max_loss = 0
 if os.path.exists(STATE_FILE):
     with open(STATE_FILE, 'r') as f:
         capital, position, entry, sl, tp = map(float, f.read().split(','))
 
 i_5m = len(df_5m) - 1
 latest_5m = df_5m.iloc[i_5m]
+
+# تنبؤات النماذج الأربعة
 prob_xgb = xgb_model.predict_proba(latest_5m[features].values.reshape(1, -1))[0, 1]
 prob_rf = rf_model.predict_proba(latest_5m[features].values.reshape(1, -1))[0, 1]
-prob = (prob_xgb + prob_rf) / 2
+prob_cat = cat_model.predict_proba(latest_5m[features].values.reshape(1, -1))[0, 1]
+
+if i_5m >= LSTM_LOOKBACK:
+    lstm_input = df_5m[lstm_features].iloc[i_5m-LSTM_LOOKBACK:i_5m].values
+    lstm_scaled = scaler.transform(lstm_input)
+    prob_lstm = lstm_model.predict(lstm_scaled.reshape(1, LSTM_LOOKBACK, len(lstm_features)), verbose=0)[0,0]
+else:
+    prob_lstm = 0.5
+
+# المتوسط الذكي
+prob = (prob_xgb + prob_lstm + prob_rf + prob_cat) / 4
 
 price = latest_5m['close']
 atr = max(latest_5m['atr_14'], 0.01*price)
@@ -121,20 +190,25 @@ buy_signal = (trend_4h==1 and latest_5m['ema_9'] > latest_5m['ema_21'] and macd_
 sell_signal = (trend_4h==-1 and latest_5m['ema_9'] < latest_5m['ema_21'] and latest_5m['macd'] < 0)
 
 ob_bull = detect_order_block(df_5m, i_5m, 'bull')
-if not (buy_signal and ob_bull and price <= ob_bull*1.005):
+if buy_signal and ob_bull and price <= ob_bull * 1.005:
+    buy_signal = True
+else:
     buy_signal = False
 
 if position == 0 and buy_signal:
-    stop_distance = STOP_ATR_MULT * atr; max_loss = capital * RISK_PER_TRADE
-    base_pos = max_loss / stop_distance if stop_distance>0 else 0
-    position = base_pos * LEVERAGE; entry = price
-    sl = price - stop_distance; tp = price + TP_ATR_MULT * atr
-    send_telegram(f"🥇 شراء ذهب (AI)\nالسعر: {price:.2f}\nالوقف: {sl:.2f}\nالهدف: {tp:.2f}\nالرصيد: {capital:.2f}")
+    stop_distance = STOP_ATR_MULT * atr
+    max_loss = capital * RISK_PER_TRADE
+    base_pos = max_loss / stop_distance if stop_distance > 0 else 0
+    position = base_pos * LEVERAGE
+    entry = price
+    sl = price - stop_distance
+    tp = price + TP_ATR_MULT * atr
+    send_telegram(f"🥇 شراء ذهب (4 نماذج)\nالسعر: {price:.2f}\nالوقف: {sl:.2f}\nالهدف: {tp:.2f}\nالرصيد: {capital:.2f}")
 elif position > 0 and (price <= sl or price >= tp or sell_signal):
     pnl = position * (price - entry)
     if pnl < -max_loss: pnl = -max_loss
     capital += pnl
-    send_telegram(f"🥇 إغلاق ذهب (AI)\nالربح/الخسارة: {pnl:.2f}\nالرصيد: {capital:.2f}")
+    send_telegram(f"🥇 إغلاق ذهب (4 نماذج)\nالربح/الخسارة: {pnl:.2f}\nالرصيد: {capital:.2f}")
     position = 0
 
 with open(STATE_FILE, 'w') as f:
