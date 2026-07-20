@@ -1,13 +1,8 @@
 import numpy as np, pandas as pd, datetime, time, os, requests, warnings
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import MinMaxScaler
 import xgboost as xgb
 from catboost import CatBoostClassifier
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping
-import ccxt
+import yfinance as yf
 warnings.filterwarnings('ignore')
 
 TELEGRAM_TOKEN = '8540803234:AAHXdvF2-GW4vcnDnWoD9Mn42r6_rJq_yic'
@@ -16,32 +11,55 @@ def send_telegram(msg):
     try: requests.post(f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage', data={'chat_id': CHAT_ID, 'text': msg}, timeout=10)
     except: pass
 
-print("🥇 بوت الذهب الثقيل جداً – 4 نماذج (بيانات حقيقية ccxt)")
-send_telegram("🟢 بوت الذهب الثقيل يبدأ (ccxt)")
+print("🥇 بوت الذهب النهائي – XGBoost + CatBoost + RandomForest")
+send_telegram("🟢 بوت الذهب النهائي بدأ (خفيف وسريع)")
 
-SYMBOL = "XAU/USDT"
+SYMBOL_YAHOO = "GC=F"
+SYMBOL_BINANCE = "XAUUSDT"
 INITIAL_CAPITAL = 10000.0; RISK_PER_TRADE = 0.01; LEVERAGE = 5
 STOP_ATR_MULT = 1.5; TP_ATR_MULT = 3.0; MIN_CONFIDENCE = 0.55
-LSTM_LOOKBACK = 30
-MODEL_XGB = 'gold_xgb.json'; MODEL_LSTM = 'gold_lstm.h5'
-MODEL_RF = 'gold_rf.pkl'; MODEL_CAT = 'gold_cat.cbm'
+MODEL_XGB = 'gold_xgb.json'; MODEL_RF = 'gold_rf.pkl'; MODEL_CAT = 'gold_cat.cbm'
 CAPITAL_FILE = 'capital_mtf.txt'; STATE_FILE = 'state.txt'
 
-def fetch_ccxt(symbol, timeframe='5m', limit=500):
-    exchanges = [ccxt.bybit(), ccxt.kraken()]
-    for ex in exchanges:
-        try:
-            if ex.has['fetchOHLCV']:
-                ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit)
-                if ohlcv and len(ohlcv) > 50:
-                    df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
-                    df['time'] = pd.to_datetime(df['time'], unit='ms')
-                    df.set_index('time', inplace=True)
-                    df = df.astype(float)
-                    return df
-        except:
-            continue
-    return pd.DataFrame()
+def fetch_data():
+    # الطريقة 1: Yahoo Finance
+    try:
+        end = datetime.datetime.now(); start = end - datetime.timedelta(days=60)
+        df = yf.download(SYMBOL_YAHOO, start=start, end=end, interval='5m', progress=False)
+        if not df.empty:
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.droplevel(1)
+            df = df[['Open','High','Low','Close','Volume']].copy()
+            df.columns = ['open','high','low','close','volume']
+            df.dropna(inplace=True)
+            if len(df) > 100: return df
+    except: pass
+
+    # الطريقة 2: Binance API
+    try:
+        url = "https://api.binance.com/api/v3/klines"
+        params = {"symbol": SYMBOL_BINANCE, "interval": "5m", "limit": 500}
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 50:
+                df = pd.DataFrame(data, columns=['time','open','high','low','close','volume','_','_','_','_','_','_'])
+                df = df[['time','open','high','low','close','volume']].astype(float)
+                df['time'] = pd.to_datetime(df['time'], unit='ms')
+                df.set_index('time', inplace=True)
+                df = df.iloc[::-1]
+                if len(df) > 100: return df
+    except: pass
+
+    # الطريقة 3: بيانات تركيبية (للطوارئ)
+    send_telegram("⚠️ استخدام بيانات تركيبية مؤقتة")
+    np.random.seed(42)
+    dates = pd.date_range(end=datetime.datetime.now(), periods=500, freq='5min')
+    close = 2600 + np.cumsum(np.random.randn(500)*2)
+    df = pd.DataFrame({
+        'open': close-1, 'high': close+2, 'low': close-2, 'close': close, 'volume': 1000
+    }, index=dates)
+    return df
 
 def compute_features(df):
     if df.empty: return df
@@ -85,77 +103,35 @@ def detect_order_block(df, i, direction='bull'):
                 return df['high'].iloc[j]
     return None
 
-# تحميل البيانات عبر ccxt
-df_5m = fetch_ccxt(SYMBOL, '5m', 800)
-df_4h = fetch_ccxt(SYMBOL, '4h', 400)
-df_1h = fetch_ccxt(SYMBOL, '1h', 400)
+# تحميل البيانات
+df_5m = fetch_data()
+if len(df_5m) < 100:
+    send_telegram("❌ فشل تحميل البيانات")
+    raise SystemExit
 
-if df_5m.empty or df_4h.empty:
-    send_telegram("❌ فشل ccxt، تجربة Yahoo...")
-    import yfinance as yf
-    try:
-        end = datetime.datetime.now(); start = end - datetime.timedelta(days=60)
-        df_5m = yf.download('GC=F', start=start, end=end, interval='5m', progress=False)
-        if isinstance(df_5m.columns, pd.MultiIndex): df_5m.columns = df_5m.columns.droplevel(1)
-        df_5m = df_5m[['Open','High','Low','Close','Volume']]; df_5m.columns = ['open','high','low','close','volume']
-        df_5m.dropna(inplace=True)
-    except: pass
-
-if df_5m.empty:
-    send_telegram("⚠️ استخدام بيانات تركيبية للاستمرار")
-    np.random.seed(42)
-    dates = pd.date_range(end=datetime.datetime.now(), periods=500, freq='5min')
-    close = 2600 + np.cumsum(np.random.randn(500)*2)
-    df_5m = pd.DataFrame({'open':close-1,'high':close+2,'low':close-2,'close':close,'volume':1000}, index=dates)
-    df_4h = df_5m.resample('4h').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'})
-    df_1h = df_5m.resample('1h').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'})
-
+df_4h = df_5m.resample('4h').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'})
+df_1h = df_5m.resample('1h').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'})
 df_5m = compute_features(df_5m)
 df_4h = compute_features(df_4h)
 df_1h = compute_features(df_1h)
 
 features = ['ema_9','ema_21','macd','macd_signal','atr_14','adx','volume_ratio','trend','close']
-lstm_features = ['close', 'ema_9', 'ema_21', 'macd', 'rsi', 'atr_14', 'adx', 'volume_ratio']
 
 # XGBoost
 if os.path.exists(MODEL_XGB):
     xgb_model = xgb.XGBClassifier(); xgb_model.load_model(MODEL_XGB)
     xgb_model.fit(df_5m[features], df_5m['target'], xgb_model=xgb_model.get_booster())
 else:
-    xgb_model = xgb.XGBClassifier(n_estimators=500, max_depth=8, learning_rate=0.03)
+    xgb_model = xgb.XGBClassifier(n_estimators=300, max_depth=6, learning_rate=0.05)
     xgb_model.fit(df_5m[features], df_5m['target'])
 xgb_model.save_model(MODEL_XGB)
-
-# LSTM
-if os.path.exists(MODEL_LSTM):
-    lstm_model = tf.keras.models.load_model(MODEL_LSTM)
-else:
-    lstm_model = Sequential([
-        LSTM(64, return_sequences=True, input_shape=(LSTM_LOOKBACK, len(lstm_features))),
-        Dropout(0.3),
-        LSTM(32),
-        Dropout(0.3),
-        Dense(1, activation='sigmoid')
-    ])
-    lstm_model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-scaler = MinMaxScaler()
-scaled = scaler.fit_transform(df_5m[lstm_features])
-X_lstm, y_lstm = [], []
-for i in range(LSTM_LOOKBACK, len(scaled)):
-    X_lstm.append(scaled[i-LSTM_LOOKBACK:i])
-    y_lstm.append(df_5m['target'].iloc[i])
-X_lstm, y_lstm = np.array(X_lstm), np.array(y_lstm)
-if len(X_lstm) > 10:
-    early_stop = EarlyStopping(monitor='loss', patience=3, verbose=0)
-    lstm_model.fit(X_lstm, y_lstm, epochs=20, batch_size=32, verbose=0, callbacks=[early_stop])
-    lstm_model.save(MODEL_LSTM)
 
 # RandomForest
 import joblib
 if os.path.exists(MODEL_RF):
     rf_model = joblib.load(MODEL_RF); rf_model.fit(df_5m[features], df_5m['target'])
 else:
-    rf_model = RandomForestClassifier(n_estimators=500, max_depth=8)
+    rf_model = RandomForestClassifier(n_estimators=300, max_depth=6)
     rf_model.fit(df_5m[features], df_5m['target'])
 joblib.dump(rf_model, MODEL_RF)
 
@@ -164,7 +140,7 @@ if os.path.exists(MODEL_CAT):
     cat_model = CatBoostClassifier(); cat_model.load_model(MODEL_CAT)
     cat_model.fit(df_5m[features], df_5m['target'], init_model=cat_model)
 else:
-    cat_model = CatBoostClassifier(iterations=500, depth=8, learning_rate=0.03, verbose=0)
+    cat_model = CatBoostClassifier(iterations=300, depth=6, learning_rate=0.05, verbose=0)
     cat_model.fit(df_5m[features], df_5m['target'])
 cat_model.save_model(MODEL_CAT)
 
@@ -178,13 +154,7 @@ latest_5m = df_5m.iloc[i_5m]
 prob_xgb = xgb_model.predict_proba(latest_5m[features].values.reshape(1, -1))[0, 1]
 prob_rf = rf_model.predict_proba(latest_5m[features].values.reshape(1, -1))[0, 1]
 prob_cat = cat_model.predict_proba(latest_5m[features].values.reshape(1, -1))[0, 1]
-if i_5m >= LSTM_LOOKBACK:
-    lstm_input = df_5m[lstm_features].iloc[i_5m-LSTM_LOOKBACK:i_5m].values
-    lstm_scaled = scaler.transform(lstm_input)
-    prob_lstm = lstm_model.predict(lstm_scaled.reshape(1, LSTM_LOOKBACK, len(lstm_features)), verbose=0)[0,0]
-else:
-    prob_lstm = 0.5
-prob = (prob_xgb + prob_lstm + prob_rf + prob_cat) / 4
+prob = (prob_xgb + prob_rf + prob_cat) / 3
 
 price = latest_5m['close']
 atr = max(latest_5m['atr_14'], 0.01*price)
@@ -206,12 +176,12 @@ if position == 0 and buy_signal:
     base_pos = max_loss / stop_distance if stop_distance > 0 else 0
     position = base_pos * LEVERAGE; entry = price
     sl = price - stop_distance; tp = price + TP_ATR_MULT * atr
-    send_telegram(f"🥇 شراء ذهب (ccxt)\nالسعر: {price:.2f}\nالوقف: {sl:.2f}\nالهدف: {tp:.2f}\nالرصيد: {capital:.2f}")
+    send_telegram(f"🥇 شراء ذهب (نهائي)\nالسعر: {price:.2f}\nالوقف: {sl:.2f}\nالهدف: {tp:.2f}\nالرصيد: {capital:.2f}")
 elif position > 0 and (price <= sl or price >= tp or sell_signal):
     pnl = position * (price - entry)
     if pnl < -max_loss: pnl = -max_loss
     capital += pnl
-    send_telegram(f"🥇 إغلاق ذهب (ccxt)\nالربح/الخسارة: {pnl:.2f}\nالرصيد: {capital:.2f}")
+    send_telegram(f"🥇 إغلاق ذهب (نهائي)\nالربح/الخسارة: {pnl:.2f}\nالرصيد: {capital:.2f}")
     position = 0
 
 with open(STATE_FILE, 'w') as f:
