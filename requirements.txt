@@ -4,3 +4,4 @@ yfinance
 scikit-learn
 tensorflow
 requests
+catboost
