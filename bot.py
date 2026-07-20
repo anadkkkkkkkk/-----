@@ -159,8 +159,8 @@ prob = (prob_xgb + prob_rf + prob_cat) / 3
 price = latest_5m['close']
 atr = max(latest_5m['atr_14'], 0.01*price)
 trend_4h = 1 if price > df_4h['ema_200'].iloc[-1] else -1
-adx_ok = df_1h['adx'].iloc[-1] > 22
-volume_ok = df_1h['volume_ratio'].iloc[-1] > 0.8
+adx_ok = (len(df_1h) > 0 and df_1h["adx"].iloc[-1] > 22)
+volume_ok = (len(df_1h) > 0 and df_1h["volume_ratio"].iloc[-1] > 0.8)
 macd_cross_up = latest_5m['macd'] > 0 and (df_5m['macd'].iloc[i_5m-1] if i_5m>0 else 0) <= 0
 buy_signal = (trend_4h==1 and latest_5m['ema_9'] > latest_5m['ema_21'] and macd_cross_up and adx_ok and volume_ok and prob >= MIN_CONFIDENCE)
 sell_signal = (trend_4h==-1 and latest_5m['ema_9'] < latest_5m['ema_21'] and latest_5m['macd'] < 0)
