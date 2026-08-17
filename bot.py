@@ -1,5 +1,6 @@
 import numpy as np, pandas as pd, datetime, time, os, requests, warnings, joblib
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
 import xgboost as xgb
 from catboost import CatBoostClassifier
 import yfinance as yf
@@ -13,9 +14,10 @@ if not TELEGRAM_TOKEN:
 def send_telegram(msg):
     try: requests.post(f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
                        data={'chat_id': CHAT_ID, 'text': msg}, timeout=10)
-    except: pass
+    except Exception as e:
+        print(f"TG failed: {e}")
 
-print("Gold Bot Final - XGB+CatBoost+RF")
+print("🧠 بوت الذهب - نظام التعلم المستمر")
 send_telegram("🟢 بوت الذهب النهائي بدأ (خفيف وسريع)")
 
 SYMBOL_YAHOO = "GC=F"
@@ -24,6 +26,7 @@ INITIAL_CAPITAL = 10000.0; RISK_PER_TRADE = 0.01; LEVERAGE = 5
 STOP_ATR_MULT = 1.5; TP_ATR_MULT = 3.0; MIN_CONFIDENCE = 0.50
 MODEL_XGB = 'gold_xgb.json'; MODEL_RF = 'gold_rf.pkl'; MODEL_CAT = 'gold_cat.cbm'
 CAPITAL_FILE = 'capital_mtf.txt'; STATE_FILE = 'state.txt'
+ACCURACY_FILE = 'accuracy_log.txt'
 
 def yahoo(interval, days):
     try:
@@ -108,7 +111,10 @@ def compute_features(df):
     df['adx'] = df['dx'].rolling(14).mean()
     df['volume_ratio'] = df['volume'] / (df['volume'].rolling(50).mean() + 1e-9)
     df['trend'] = np.where(df['close'] > df['ema_200'], 1, -1)
-    df['target'] = (df['close'].shift(-3)/df['close'] - 1 > 0.0012).astype(int)
+    # هدف متكيف مع ATR
+    atr_pct = df['atr_14'] / df['close']
+    target_threshold = atr_pct * 0.5
+    df['target'] = (df['close'].shift(-3)/df['close'] - 1 > target_threshold).astype(int)
     df.dropna(inplace=True)
     return df
 
@@ -121,29 +127,76 @@ if len(df_5m) < 100:
 
 features = ['ema_9','ema_21','macd','macd_signal','atr_14','adx','volume_ratio','trend','close']
 
+# تقسيم البيانات: تدريب (80%) + اختبار (20%) للتقييم
+train_size = int(len(df_5m) * 0.8)
+df_train = df_5m.iloc[:train_size]
+df_test = df_5m.iloc[train_size:]
+
+# تدريب XGBoost
 if os.path.exists(MODEL_XGB):
     xgb_model = xgb.XGBClassifier(); xgb_model.load_model(MODEL_XGB)
     xgb_model.fit(df_5m[features], df_5m['target'], xgb_model=xgb_model.get_booster())
 else:
     xgb_model = xgb.XGBClassifier(n_estimators=300, max_depth=6, learning_rate=0.05)
-    xgb_model.fit(df_5m[features], df_5m['target'])
+    xgb_model.fit(df_train[features], df_train['target'])
+xgb_pred = xgb_model.predict(df_test[features])
+xgb_acc = accuracy_score(df_test['target'], xgb_pred)
 xgb_model.save_model(MODEL_XGB)
 
+# تدريب RandomForest
 if os.path.exists(MODEL_RF):
     rf_model = joblib.load(MODEL_RF); rf_model.fit(df_5m[features], df_5m['target'])
 else:
     rf_model = RandomForestClassifier(n_estimators=300, max_depth=6)
-    rf_model.fit(df_5m[features], df_5m['target'])
+    rf_model.fit(df_train[features], df_train['target'])
+rf_pred = rf_model.predict(df_test[features])
+rf_acc = accuracy_score(df_test['target'], rf_pred)
 joblib.dump(rf_model, MODEL_RF)
 
+# تدريب CatBoost
 if os.path.exists(MODEL_CAT):
     cat_model = CatBoostClassifier(); cat_model.load_model(MODEL_CAT)
     cat_model.fit(df_5m[features], df_5m['target'], init_model=cat_model)
 else:
     cat_model = CatBoostClassifier(iterations=300, depth=6, learning_rate=0.05, verbose=0)
-    cat_model.fit(df_5m[features], df_5m['target'])
+    cat_model.fit(df_train[features], df_train['target'])
+cat_pred = cat_model.predict(df_test[features])
+cat_acc = accuracy_score(df_test['target'], cat_pred)
 cat_model.save_model(MODEL_CAT)
 
+print(f"📊 Training Accuracy - XGB: {xgb_acc:.2%}, RF: {rf_acc:.2%}, CatBoost: {cat_acc:.2%}")
+
+# حفظ سجل الدقة
+timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+with open(ACCURACY_FILE, 'a') as f:
+    f.write(f"{timestamp},{xgb_acc:.4f},{rf_acc:.4f},{cat_acc:.4f}\n")
+
+# تقرير يومي (كل 24 ساعة)
+hour = datetime.datetime.now().hour
+if hour == 0 or not os.path.exists('last_report.txt'):
+    try:
+        with open(ACCURACY_FILE, 'r') as f:
+            lines = f.readlines()
+        if len(lines) >= 10:
+            recent = lines[-24:] if len(lines) >= 24 else lines
+            xgb_avg = np.mean([float(l.split(',')[1]) for l in recent])
+            rf_avg = np.mean([float(l.split(',')[2]) for l in recent])
+            cat_avg = np.mean([float(l.split(',')[3]) for l in recent])
+            best = max([('XGBoost', xgb_avg), ('RandomForest', rf_avg), ('CatBoost', cat_avg)], key=lambda x: x[1])
+            report = f"📈 تقرير التدريب اليومي\n\n"
+            report += f"🏆 الأفضل: {best[0]} ({best[1]:.1%})\n\n"
+            report += f"📊 متوسط الدقة:\n"
+            report += f"  • XGBoost: {xgb_avg:.1%}\n"
+            report += f"  • RandomForest: {rf_avg:.1%}\n"
+            report += f"  • CatBoost: {cat_avg:.1%}\n\n"
+            report += f"🔄 عدد نقاط التدريب: {len(recent)}"
+            send_telegram(report)
+            with open('last_report.txt', 'w') as f:
+                f.write(timestamp)
+    except Exception as e:
+        print(f"Report failed: {e}")
+
+# تحميل الحالة
 capital = INITIAL_CAPITAL; position = 0; entry = 0; sl = 0; tp = 0; max_loss = 0
 if os.path.exists(STATE_FILE):
     try:
@@ -151,12 +204,20 @@ if os.path.exists(STATE_FILE):
             capital, position, entry, sl, tp = map(float, f.read().split(','))
     except: pass
 
+# الترجيح حسب الأداء
+total_acc = xgb_acc + rf_acc + cat_acc + 1e-9
+w_xgb = xgb_acc / total_acc
+w_rf = rf_acc / total_acc
+w_cat = cat_acc / total_acc
+
 i_5m = len(df_5m) - 1
 latest_5m = df_5m.iloc[i_5m]
 prob_xgb = xgb_model.predict_proba(latest_5m[features].values.reshape(1, -1))[0, 1]
 prob_rf = rf_model.predict_proba(latest_5m[features].values.reshape(1, -1))[0, 1]
 prob_cat = cat_model.predict_proba(latest_5m[features].values.reshape(1, -1))[0, 1]
-prob = (prob_xgb + prob_rf + prob_cat) / 3
+
+# احتمال مرجح حسب الأداء
+prob = w_xgb * prob_xgb + w_rf * prob_rf + w_cat * prob_cat
 
 price = latest_5m['close']
 atr = max(latest_5m['atr_14'], 0.01*price)
