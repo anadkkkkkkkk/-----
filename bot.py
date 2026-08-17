@@ -1,6 +1,7 @@
 import numpy as np, pandas as pd, datetime, time, os, requests, warnings, joblib
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
+from sklearn.model_selection import cross_val_score
 import xgboost as xgb
 from catboost import CatBoostClassifier
 import yfinance as yf
