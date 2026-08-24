@@ -1,6 +1,3 @@
-xgboost
+ccxt
 pandas
-yfinance
-scikit-learn
-catboost
-requests
+numpy
