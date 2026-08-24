@@ -2,10 +2,10 @@ import ccxt
 import pandas as pd
 import numpy as np
 
-# ========== إعدادات منصة OKX ==========
-API_KEY = "22e91e96-99bc-4d0c-9f9c-2679bd7c6df5"
-SECRET_KEY = "F30B08A12BD7DA258B3B706C57B939F0"
-PASSPHRASE = "F30B08A12BD7DA258B3B706C57B939F0"
+# ========== إعدادات منصة OKX الجديدة (بدون قيود IP) ==========
+API_KEY = "2959fb46-d53a-47ce-8c50-f5dbf5831d14"
+SECRET_KEY = "0ED071BC9803985ABE2EB2C454361636"
+PASSPHRASE = "0ED071BC9803985ABE2EB2C454361636"
 
 exchange = ccxt.okx({
     'apiKey': API_KEY,
@@ -105,7 +105,7 @@ def execute_trade(signal, sl, tp, amount=0.01):
         print(f"❌ خطأ التنفيذ في OKX: {e}")
 
 def run_bot():
-    print("🤖 جاري فحص السوق على منصة OKX عبر GitHub Actions...")
+    print("🤖 جاري فحص السوق على منصة OKX بالمفتاح الجديد...")
     try:
         df = fetch_candles(SYMBOL)
         current_hour = pd.Timestamp.now('UTC').hour
