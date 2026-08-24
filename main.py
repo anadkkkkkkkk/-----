@@ -2,7 +2,7 @@ import ccxt
 import pandas as pd
 import numpy as np
 
-# ========== إعدادات منصة OKX الجديدة (بدون قيود IP) ==========
+# ========== إعدادات منصة OKX ==========
 API_KEY = "2959fb46-d53a-47ce-8c50-f5dbf5831d14"
 SECRET_KEY = "0ED071BC9803985ABE2EB2C454361636"
 PASSPHRASE = "0ED071BC9803985ABE2EB2C454361636"
@@ -21,10 +21,14 @@ RISK_REWARD = 2.0
 PROB_THRESHOLD = 0.60
 
 try:
+    # اختبار الاتصال الحقيقي بجلب رصيد الحساب أو معلوماته للتأكد من صحة المفاتيح
+    balance = exchange.fetch_balance()
+    print("✅ تم الاتصال بنجاح بمنصة OKX وتجاوز المصادقة!")
+    
     exchange.set_leverage(LEVERAGE, 'BTC/USDT')
     print(f"✅ تم ضبط الرافعة المالية إلى {LEVERAGE}x")
 except Exception as e:
-    print(f"⚠️ ملاحظة الرافعة: {e}")
+    print(f"❌ خطأ المصادقة أو الاتصال بـ OKX: {e}")
 
 def fetch_candles(symbol, timeframe='15m', limit=250):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
@@ -92,20 +96,8 @@ def get_model_probability(df, signal):
         
     return min(round(prob, 2), 0.95)
 
-def execute_trade(signal, sl, tp, amount=0.01):
-    try:
-        side = 'buy' if signal == 'BUY' else 'sell'
-        sl_side = 'sell' if signal == 'BUY' else 'buy'
-        print(f"🚀 تنفيذ صفقة {signal} على OKX...")
-        exchange.create_order(SYMBOL, 'market', side, amount)
-        exchange.create_order(SYMBOL, 'stop_market', sl_side, amount, params={'stopPrice': sl})
-        exchange.create_order(SYMBOL, 'take_profit_market', sl_side, amount, params={'stopPrice': tp})
-        print("✅ تم تنفيذ أوامر OKX بنجاح.")
-    except Exception as e:
-        print(f"❌ خطأ التنفيذ في OKX: {e}")
-
 def run_bot():
-    print("🤖 جاري فحص السوق على منصة OKX بالمفتاح الجديد...")
+    print("🤖 جاري فحص السوق على منصة OKX...")
     try:
         df = fetch_candles(SYMBOL)
         current_hour = pd.Timestamp.now('UTC').hour
@@ -114,16 +106,10 @@ def run_bot():
             signal, sl, tp = analyze_market(df)
             prob = get_model_probability(df, signal)
             print(f"📊 الإشارة: {signal if signal else 'NONE'} | الاحتمالية: {prob*100}%")
-            
-            if signal and prob >= PROB_THRESHOLD:
-                print("🚀 الاحتمالية تتجاوز الحد الأدنى، جاري الإرسال لمنصة OKX...")
-                execute_trade(signal, sl, tp)
-            else:
-                print("⏳ لم تتطابق الشروط أو الاحتمالية منخفضة.")
         else:
             print("⏳ خارج أوقات الجلسة المحددة (12:00 - 19:00 UTC).")
     except Exception as e:
-        print(f"⚠️ خطأ في البوت: {e}")
+        print(f"⚠️ خطأ في فحص السوق: {e}")
 
 if __name__ == "__main__":
     run_bot()
