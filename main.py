@@ -1,36 +1,41 @@
-import os
 import ccxt
 import pandas as pd
 import numpy as np
 
-# 1. الإعدادات والمفاتيح
-API_KEY = os.getenv("BINGX_API_KEY", "")
-SECRET_KEY = os.getenv("BINGX_SECRET_KEY", "")
+# ========== 1. إعدادات حساب OKX ومفاتيحه ==========
+API_KEY = "22e91e96-99bc-4d0c-9f9c-2679bd7c6df5"
+SECRET_KEY = "F30B08A12BD7DA258B3B706C57B939F0"
+PASSPHRASE = "F30B08A12BD7DA258B3B706C57B939F0"  # استخدام كلمة المرور المعطاة كـ Passphrase أيضاً احتياطياً
 
-exchange = ccxt.bingx({
+# الاتصال بمنصة OKX (عقود السواب Futures)
+exchange = ccxt.okx({
     'apiKey': API_KEY,
     'secret': SECRET_KEY,
+    'password': PASSPHRASE,
     'options': {'defaultType': 'swap'},
     'enableRateLimit': True,
 })
 
-SYMBOL = 'GOLD/USDT'
-LEVERAGE = 10
-RISK_REWARD = 2.0
-PROB_THRESHOLD = 0.60  # عتبة فلتر النموذج للتنفيذ (60%)
+SYMBOL = 'BTC/USDT:USDT'  # زوج التداول على OKX
+LEVERAGE = 10             # الرافعة المالية
+RISK_REWARD = 2.0         # نسبة الهدف إلى الوقف (1:2)
+PROB_THRESHOLD = 0.60     # عتبة فلتر النموذج للتنفيذ (60%)
 
+# ضبط الرافعة المالية في OKX
 try:
-    exchange.set_leverage(LEVERAGE, SYMBOL)
+    exchange.set_leverage(LEVERAGE, 'BTC/USDT')
+    print(f"✅ تم ضبط الرافعة المالية في OKX إلى {LEVERAGE}x")
 except Exception as e:
-    pass
+    print(f"⚠️ ملاحظة الرافعة: {e}")
 
+# ========== 2. جلب البيانات ==========
 def fetch_candles(symbol, timeframe='15m', limit=250):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     return df
 
-# 2. استراتيجية BRK + EMA200
+# ========== 3. استراتيجية BRK + EMA200 ==========
 def analyze_market(df):
     df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
     
@@ -56,12 +61,14 @@ def analyze_market(df):
     close = df['close'].iloc[i]
     ema = df['EMA200'].iloc[i]
     
+    # إشارة شراء (Long)
     if close > ema and close > last_ph and df['close'].iloc[i-1] <= last_ph:
         sl = df['low'].iloc[i-2:i+1].min()
         risk = close - sl
         if 1.5 <= risk <= 12:
             return 'BUY', sl, close + (risk * RISK_REWARD)
 
+    # إشارة بيع (Short)
     elif close < ema and close < last_pl and df['close'].iloc[i-1] >= last_pl:
         sl = df['high'].iloc[i-2:i+1].max()
         risk = sl - close
@@ -70,19 +77,21 @@ def analyze_market(df):
 
     return None, 0, 0
 
-# 3. نموذج فلتر الاحتمالية (Probability Model)
+# ========== 4. نموذج فلتر الاحتمالية ==========
 def get_model_probability(df, signal):
     if not signal:
         return 0.0
     
-    # حساب المؤشرات الداعمة للنموذج
-    df['RSI'] = 100 - (100 / (1 + (df['close'].diff().clip(lower=0).rolling(14).mean() / (-df['close'].diff().clip(upper=0).rolling(14).mean()))))
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
     df['Vol_Ratio'] = df['volume'] / df['volume'].rolling(20).mean()
     
     last = df.iloc[-1]
     prob = 0.50
     
-    # فلتر الزخم وحجم التداول
     if signal == 'BUY':
         if 50 <= last['RSI'] <= 68: prob += 0.20
         if last['Vol_Ratio'] > 1.2: prob += 0.15
@@ -92,20 +101,23 @@ def get_model_probability(df, signal):
         
     return min(round(prob, 2), 0.95)
 
+# ========== 5. تنفيذ الصفقات على OKX ==========
 def execute_trade(signal, sl, tp, amount=0.01):
     try:
         side = 'buy' if signal == 'BUY' else 'sell'
         sl_side = 'sell' if signal == 'BUY' else 'buy'
         
+        print(f"🚀 تنفيذ صفقة {signal} على OKX...")
         exchange.create_order(SYMBOL, 'market', side, amount)
-        exchange.create_order(SYMBOL, 'STOP_MARKET', sl_side, amount, params={'stopPrice': sl})
-        exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', sl_side, amount, params={'stopPrice': tp})
-        print(f"✅ تم تنفيذ صفقة {signal} بنجاح.")
+        exchange.create_order(SYMBOL, 'stop_market', sl_side, amount, params={'stopPrice': sl})
+        exchange.create_order(SYMBOL, 'take_profit_market', sl_side, amount, params={'stopPrice': tp})
+        print("✅ تم تنفيذ أوامر OKX بنجاح.")
     except Exception as e:
-        print(f"❌ خطأ التنفيذ: {e}")
+        print(f"❌ خطأ التنفيذ في OKX: {e}")
 
+# ========== 6. تشغيل البوت ==========
 def run_bot():
-    print("🤖 جاري فحص استراتيجية BRK + فلتر النموذج...")
+    print("🤖 جاري فحص السوق على منصة OKX...")
     try:
         df = fetch_candles(SYMBOL)
         current_hour = pd.Timestamp.now('UTC').hour
@@ -114,17 +126,17 @@ def run_bot():
             signal, sl, tp = analyze_market(df)
             prob = get_model_probability(df, signal)
             
-            print(f"📊 الإشارة: {signal if signal else 'NONE'} | احتمالية النموذج: {prob*100}%")
+            print(f"📊 الإشارة: {signal if signal else 'NONE'} | الاحتمالية: {prob*100}%")
             
             if signal and prob >= PROB_THRESHOLD:
-                print("🚀 الاحتمالية أعلى من العتبة، جاري فتح الصفقة...")
+                print("🚀 الاحتمالية تتجاوز الحد الأدنى، جاري الإرسال لمنصة OKX...")
                 execute_trade(signal, sl, tp)
             else:
-                print("⏳ لم تتجاوز الشروط أو الاحتمالية حد العتبة المطلوب.")
+                print("⏳ لم تتطابق الشروط أو الاحتمالية منخفضة.")
         else:
-            print("⏳ خارج أوقات الجلسة (12:00 - 19:00 UTC).")
+            print("⏳ خارج أوقات الجلسة المحددة (12:00 - 19:00 UTC).")
     except Exception as e:
-        print(f"⚠️ خطأ: {e}")
+        print(f"⚠️ خطأ في البوت: {e}")
 
 if __name__ == "__main__":
     run_bot()
