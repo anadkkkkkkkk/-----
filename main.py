@@ -2,10 +2,10 @@ import ccxt
 import pandas as pd
 import numpy as np
 
-# ========== المفاتيح الجديدة بدون قيود IP ==========
-API_KEY = "2959fb46-d53a-47ce-8c50-f5dbf5831d14"
+# ========== البيانات الصحيحة والمطابقة تماماً ==========
+API_KEY = "22e91e96-99bc-4d0c-9f9c-2679bd7c6df5"
+PASSPHRASE = "F30B08A12BD7DA258B3B706C57B939F0"
 SECRET_KEY = "0ED071BC9803985ABE2EB2C454361636"
-PASSPHRASE = "OkxBot2026!" # كلمة المرور القياسية المتوافقة مع المفتاح
 
 exchange = ccxt.okx({
     'apiKey': API_KEY,
@@ -21,10 +21,12 @@ RISK_REWARD = 2.0
 PROB_THRESHOLD = 0.60
 
 try:
+    balance = exchange.fetch_balance()
+    print("✅ تم الاتصال بنجاح وتجاوز المصادقة مع OKX!")
     exchange.set_leverage(LEVERAGE, 'BTC/USDT')
-    print(f"✅ تم الاتصال بنجاح وضبط الرافعة المالية إلى {LEVERAGE}x")
+    print(f"✅ تم ضبط الرافعة المالية إلى {LEVERAGE}x")
 except Exception as e:
-    print(f"⚠️ ملاحظة الرافعة: {e}")
+    print(f"❌ خطأ الاتصال: {e}")
 
 def fetch_candles(symbol, timeframe='15m', limit=250):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
@@ -93,7 +95,7 @@ def get_model_probability(df, signal):
     return min(round(prob, 2), 0.95)
 
 def run_bot():
-    print("🤖 جاري فحص السوق على OKX بالمفتاح الجديد...")
+    print("🤖 جاري فحص السوق على OKX...")
     try:
         df = fetch_candles(SYMBOL)
         current_hour = pd.Timestamp.now('UTC').hour
