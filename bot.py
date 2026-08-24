@@ -19,7 +19,7 @@ def send_telegram(msg):
         print(f"TG failed: {e}")
 
 print("🧠 بوت الذهب - نظام التعلم المستمر")
-send_telegram("🟢 بوت الذهب النهائي بدأ (خفيف وسريع)")
+#  # send_telegram("🟢 بوت الذهب النهائي بدأ (خفيف وسريع)")
 
 SYMBOL_YAHOO = "GC=F"
 SYMBOLS_BINANCE = ["XAUUSDT", "PAXGUSDT"]
