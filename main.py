@@ -5,7 +5,7 @@ import numpy as np
 # ========== 1. إعدادات حساب OKX ومفاتيحه ==========
 API_KEY = "22e91e96-99bc-4d0c-9f9c-2679bd7c6df5"
 SECRET_KEY = "F30B08A12BD7DA258B3B706C57B939F0"
-PASSPHRASE = "F30B08A12BD7DA258B3B706C57B939F0"  # استخدام كلمة المرور المعطاة كـ Passphrase أيضاً احتياطياً
+PASSPHRASE = "F30B08A12BD7DA258B3B706C57B939F0"
 
 # الاتصال بمنصة OKX (عقود السواب Futures)
 exchange = ccxt.okx({
