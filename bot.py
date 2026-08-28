@@ -9,32 +9,32 @@ warnings.filterwarnings('ignore')
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
 CHAT_ID = os.environ.get('CHAT_ID', '7644255708')
 if not TELEGRAM_TOKEN:
-    print("TELEGRAM_TOKEN missing from Secrets"); raise SystemExit
+    print("TELEGRAM_TOKEN missing"); raise SystemExit
 
 def send_telegram(msg):
-    try: requests.post(f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
-                       data={'chat_id': CHAT_ID, 'text': msg}, timeout=10)
+    try:
+        requests.post(f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
+                      data={'chat_id': CHAT_ID, 'text': msg}, timeout=10)
     except Exception as e:
         print(f"TG failed: {e}")
 
-print("🧠 بوت الذهب - نظام جميع الإطارات الزمنية (All Timeframes)")
+print("🧠 بوت الذهب - نظام جميع الفريمات (محسّن)")
 send_telegram("🟢 بوت الذهب بدأ (محلل جميع الفريمات: 1m, 5m, 15m, 1h, 4h, 1d)")
 
 SYMBOL_YAHOO = "GC=F"
 SYMBOLS_BINANCE = ["XAUUSDT", "PAXGUSDT"]
 INITIAL_CAPITAL = 10000.0; RISK_PER_TRADE = 0.01; LEVERAGE = 5
-STOP_ATR_MULT = 1.5; TP_ATR_MULT = 2.5; MIN_CONFIDENCE = 0.45
+STOP_ATR_MULT = 1.5; TP_ATR_MULT = 2.5; MIN_CONFIDENCE = 0.35
 MODEL_XGB = 'gold_xgb.json'; MODEL_RF = 'gold_rf.pkl'; MODEL_CAT = 'gold_cat.cbm'
 CAPITAL_FILE = 'capital_mtf.txt'; STATE_FILE = 'state.txt'
 ACCURACY_FILE = 'accuracy_log.txt'
 
 def fetch_data(interval, days, limit):
-    # محاولة الجلب من Yahoo
     try:
         end = datetime.datetime.now(); start = end - datetime.timedelta(days=days)
         df = yf.download(SYMBOL_YAHOO, start=start, end=end, interval=interval, progress=False)
         if df is not None and not df.empty:
-            if isinstance(df.columns, pd.MultiIndex): 
+            if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.droplevel(1)
             df = df[['Open','High','Low','Close','Volume']].copy()
             df.columns = ['open','high','low','close','volume']
@@ -44,7 +44,6 @@ def fetch_data(interval, days, limit):
     except Exception as e:
         print(f"Yahoo {interval} failed:", e)
 
-    # محاولة الجلب من Binance في حال تعثر Yahoo
     for sym in SYMBOLS_BINANCE:
         try:
             resp = requests.get("https://api.binance.com/api/v3/klines",
@@ -65,7 +64,6 @@ def fetch_data(interval, days, limit):
 
 AGG = {'open':'first','high':'max','low':'min','close':'last','volume':'sum'}
 
-# 1. جلب كافة الفريمات
 df_1m  = fetch_data('1m', 2, 300)
 df_5m  = fetch_data('5m', 5, 500)
 df_15m = fetch_data('15m', 15, 400)
@@ -75,7 +73,6 @@ df_1d  = fetch_data('1d', 180, 200)
 
 LIVE_DATA = df_5m is not None
 
-# حماية بالبيانات الاحتياطية وتوليد الفريمات من الفريمات الأصغر عند التعثر
 if df_5m is None:
     send_telegram("⚠️ استخدام بيانات افتراضية تعويضية")
     dates = pd.date_range(end=datetime.datetime.now(), periods=500, freq='5min')
@@ -118,14 +115,12 @@ def compute_features(df):
     df['adx'] = df['dx'].rolling(14).mean()
     df['volume_ratio'] = df['volume'] / (df['volume'].rolling(50).mean() + 1e-9)
     df['trend'] = np.where(df['close'] > df['ema_200'], 1, -1)
-    
     atr_pct = df['atr_14'] / df['close']
     target_threshold = atr_pct * 0.3
     df['target'] = (df['close'].shift(-3)/df['close'] - 1 > target_threshold).astype(int)
     df.dropna(inplace=True)
     return df
 
-# معالجة بيانات جميع الفريمات
 df_1m  = compute_features(df_1m)
 df_5m  = compute_features(df_5m)
 df_15m = compute_features(df_15m)
@@ -134,27 +129,62 @@ df_4h  = compute_features(df_4h)
 df_1d  = compute_features(df_1d)
 
 if len(df_5m) < 20:
-    send_telegram("❌ فشل تحميل البيانات المجهزة"); raise SystemExit
+    send_telegram("❌ فشل تحميل البيانات"); raise SystemExit
 
 features = ['ema_9','ema_21','macd','macd_signal','atr_14','adx','volume_ratio','trend','close']
 
-# تدريب النماذج على فريم التنفيذ (5 دقائق)
 train_size = int(len(df_5m) * 0.8)
 df_train = df_5m.iloc[:train_size]
 df_test  = df_5m.iloc[train_size:]
 
-xgb_model = xgb.XGBClassifier(n_estimators=100, max_depth=4, learning_rate=0.05)
-xgb_model.fit(df_train[features], df_train['target'])
+# XGBoost مع حفظ/تحميل
+if os.path.exists(MODEL_XGB):
+    try:
+        xgb_model = xgb.XGBClassifier(); xgb_model.load_model(MODEL_XGB)
+        xgb_model.fit(df_5m[features], df_5m['target'], xgb_model=xgb_model.get_booster())
+    except:
+        xgb_model = xgb.XGBClassifier(n_estimators=300, max_depth=6, learning_rate=0.05)
+        xgb_model.fit(df_train[features], df_train['target'])
+else:
+    xgb_model = xgb.XGBClassifier(n_estimators=300, max_depth=6, learning_rate=0.05)
+    xgb_model.fit(df_train[features], df_train['target'])
 xgb_acc = accuracy_score(df_test['target'], xgb_model.predict(df_test[features]))
+xgb_model.save_model(MODEL_XGB)
 
-rf_model = RandomForestClassifier(n_estimators=100, max_depth=4)
-rf_model.fit(df_train[features], df_train['target'])
+# RandomForest مع حفظ/تحميل
+if os.path.exists(MODEL_RF):
+    try:
+        rf_model = joblib.load(MODEL_RF); rf_model.fit(df_5m[features], df_5m['target'])
+    except:
+        rf_model = RandomForestClassifier(n_estimators=300, max_depth=6); rf_model.fit(df_train[features], df_train['target'])
+else:
+    rf_model = RandomForestClassifier(n_estimators=300, max_depth=6)
+    rf_model.fit(df_train[features], df_train['target'])
 rf_acc = accuracy_score(df_test['target'], rf_model.predict(df_test[features]))
+joblib.dump(rf_model, MODEL_RF)
 
-cat_model = CatBoostClassifier(iterations=100, depth=4, learning_rate=0.05, verbose=0)
-cat_model.fit(df_train[features], df_train['target'])
+# CatBoost مع حفظ/تحميل
+if os.path.exists(MODEL_CAT):
+    try:
+        cat_model = CatBoostClassifier(verbose=0); cat_model.load_model(MODEL_CAT)
+        cat_model.fit(df_5m[features], df_5m['target'], init_model=cat_model)
+    except:
+        cat_model = CatBoostClassifier(iterations=300, depth=6, learning_rate=0.05, verbose=0)
+        cat_model.fit(df_train[features], df_train['target'])
+else:
+    cat_model = CatBoostClassifier(iterations=300, depth=6, learning_rate=0.05, verbose=0)
+    cat_model.fit(df_train[features], df_train['target'])
 cat_acc = accuracy_score(df_test['target'], cat_model.predict(df_test[features]))
+cat_model.save_model(MODEL_CAT)
 
+print(f"📊 Accuracy - XGB: {xgb_acc:.2%}, RF: {rf_acc:.2%}, CatBoost: {cat_acc:.2%}")
+
+# حفظ سجل الدقة
+timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+with open(ACCURACY_FILE, 'a') as f:
+    f.write(f"{timestamp},{xgb_acc:.4f},{rf_acc:.4f},{cat_acc:.4f}\n")
+
+# الترجيح الذكي
 total_acc = xgb_acc + rf_acc + cat_acc + 1e-9
 w_xgb = xgb_acc / total_acc; w_rf = rf_acc / total_acc; w_cat = cat_acc / total_acc
 
@@ -166,7 +196,7 @@ prob_rf  = rf_model.predict_proba(latest_features)[0, 1]
 prob_cat = cat_model.predict_proba(latest_features)[0, 1]
 prob = w_xgb * prob_xgb + w_rf * prob_rf + w_cat * prob_cat
 
-# 2. تحليل سياق الفريمات المتعددة (Multi-Timeframe Analysis)
+# تحليل جميع الفريمات
 price = df_5m['close'].iloc[-1]
 atr   = max(df_5m['atr_14'].iloc[-1], 0.01*price)
 
@@ -178,17 +208,23 @@ trend_15m = 1 if len(df_15m) > 0 and price > df_15m['ema_9'].iloc[-1] else -1
 ema_trend_5m = df_5m['ema_9'].iloc[-1] > df_5m['ema_21'].iloc[-1]
 macd_bull_5m = df_5m['macd'].iloc[-1] > df_5m['macd_signal'].iloc[-1]
 
-# توافق الفريمات: الاتجاه الأكبر (4H/1D) مع الاتجاه المتوسط والدخول (5m/15m/1h)
-bullish_alignment = (trend_4h == 1 or trend_1d == 1) and trend_1h == 1 and ema_trend_5m and macd_bull_5m
-bearish_alignment = (trend_4h == -1 or trend_1d == -1) and trend_1h == -1 and not ema_trend_5m and not macd_bull_5m
+# شروط مخففة - توافق جزئي كافي
+bullish_count = sum([
+    trend_1d == 1, trend_4h == 1, trend_1h == 1, trend_15m == 1, ema_trend_5m, macd_bull_5m
+])
+bearish_count = sum([
+    trend_1d == -1, trend_4h == -1, trend_1h == -1, trend_15m == -1, not ema_trend_5m, not macd_bull_5m
+])
 
-buy_signal  = bool(bullish_alignment and prob >= MIN_CONFIDENCE)
-sell_signal = bool(bearish_alignment)
+# الدخول: 4 من 6 شروط كافية بدل 5/5
+buy_signal  = bool(LIVE_DATA and bullish_count >= 4 and prob >= MIN_CONFIDENCE)
+sell_signal = bool(LIVE_DATA and bearish_count >= 4)
 
-print(f"الفريمات: 1D={trend_1d} | 4H={trend_4h} | 1H={trend_1h} | 15M={trend_15m} | 5M_EMA={bool(ema_trend_5m)}")
-print(f"Prob={prob:.2f} | BUY={buy_signal} | SELL={sell_signal}")
+print(f"🎯 الفريمات: 1D={trend_1d} | 4H={trend_4h} | 1H={trend_1h} | 15M={trend_15m} | 5M_EMA={bool(ema_trend_5m)} | 5M_MACD={macd_bull_5m}")
+print(f"📊 Score: Bull={bullish_count}/6 | Bear={bearish_count}/6")
+print(f"🎲 Prob={prob:.2f} | BUY={buy_signal} | SELL={sell_signal} | live={LIVE_DATA}")
 
-# إدارة رأس المال والتنفيذ
+# إدارة رأس المال
 capital = INITIAL_CAPITAL; position = 0; entry = 0; sl = 0; tp = 0; max_loss = 0
 if os.path.exists(STATE_FILE):
     try:
@@ -202,7 +238,7 @@ if position == 0 and buy_signal:
     base_pos = max_loss / stop_distance if stop_distance > 0 else 0
     position = base_pos * LEVERAGE; entry = price
     sl = price - stop_distance; tp = price + TP_ATR_MULT * atr
-    send_telegram(f"🥇 شراء ذهب (توافق متعدد الفريمات)\nالسعر: {price:.2f}\nالوقف: {sl:.2f}\nالهدف: {tp:.2f}\nالرصيد: {capital:.2f}")
+    send_telegram(f"🥇 شراء ذهب (Score: {bullish_count}/6)\nالسعر: {price:.2f}\nالوقف: {sl:.2f}\nالهدف: {tp:.2f}\nالرصيد: {capital:.2f}")
 elif position > 0 and (price <= sl or price >= tp or sell_signal):
     pnl = position * (price - entry)
     if pnl < -max_loss: pnl = -max_loss
