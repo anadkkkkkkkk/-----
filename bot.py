@@ -22,8 +22,8 @@ def send_telegram(msg):
 RISK_LOSS = 0.01
 RISK_REWARD = 2.0
 LEVERAGE = 10
-PROB_THRESHOLD = 0.45
-COOLDOWN_MIN = 15
+PROB_THRESHOLD = 0.35
+COOLDOWN_MIN = 5
 EXCHANGE_RATE = 530
 
 SYMBOL_YAHOO = "GC=F"
@@ -237,11 +237,11 @@ bear_score = sum([trend_1d==-1, trend_4h==-1, trend_1h==-1, trend_15m==-1, not e
 c5_bull  = ema_5m and macd_5m
 c15_bull = trend_15m == 1
 c1h_bull = trend_1h == 1
-entry_bull = c5_bull and c15_bull and c1h_bull
+entry_bull = (int(c5_bull)+int(c15_bull)+int(c1h_bull)) >= 2
 c5_bear  = (not ema_5m) and (not macd_5m)
 c15_bear = trend_15m == -1
 c1h_bear = trend_1h == -1
-entry_bear = c5_bear and c15_bear and c1h_bear
+entry_bear = (int(c5_bear)+int(c15_bear)+int(c1h_bear)) >= 2
 ctx_bull = (trend_4h == 1 or trend_1d == 1)
 ctx_bear = (trend_4h == -1 or trend_1d == -1)
 
