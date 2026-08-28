@@ -1,7 +1,7 @@
 name: Gold Bot Runner
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -18,15 +18,18 @@ jobs:
         with:
           python-version: '3.10'
       - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run bot
+        run: pip install -r requirements.txt ccxt
+      - name: Run OKX 5$ Strategy
         env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python bot.py
+        run: python main.py
       - name: Save state
         run: |
           git config user.name "bot"
           git config user.email "bot@noreply.github.com"
-          git add -f state.txt capital_mtf.txt gold_xgb.json gold_rf.pkl gold_cat.cbm accuracy_log.txt last_report.txt 2>/dev/null || true
+          git add -f okx_state.json 2>/dev/null || true
           git diff --staged --quiet || (git commit -m "auto state" && git push)
