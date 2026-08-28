@@ -1,3 +1,8 @@
-ccxt
-pandas
 numpy
+pandas
+xgboost
+catboost
+scikit-learn
+yfinance
+requests
+joblib
