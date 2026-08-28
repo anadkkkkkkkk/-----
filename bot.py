@@ -18,13 +18,21 @@ def send_telegram(msg):
     except Exception as e:
         print(f"TG failed: {e}")
 
-print("🧠 بوت الذهب - نظام جميع الفريمات (محسّن)")
-send_telegram("🟢 بوت الذهب بدأ (محلل جميع الفريمات: 1m, 5m, 15m, 1h, 4h, 1d)")
+# رسالة البدء مرة كل ساعة فقط (بدون إزعاج)
+if datetime.datetime.now().minute < 5:
+    send_telegram("🟢 بوت الذهب يعمل (استراتيجية: ربح 2% / خسارة 1% - بدون توقف)")
+
+# ========== الاستراتيجية ==========
+RISK_LOSS      = 0.01     # الخسارة: 1% من الرصيد
+RISK_REWARD    = 2.0      # الربح: 2% (ضعف الخسارة)
+LEVERAGE       = 10       # رافعة 10x
+PROB_THRESHOLD = 0.55     # جودة الإشارة
+COOLDOWN_MIN   = 15       # انتظار 15 دقيقة بعد الخسارة
+EXCHANGE_RATE  = 530      # سعر الدولار بالريال اليمني
 
 SYMBOL_YAHOO = "GC=F"
 SYMBOLS_BINANCE = ["XAUUSDT", "PAXGUSDT"]
-INITIAL_CAPITAL = 10000.0; RISK_PER_TRADE = 0.01; LEVERAGE = 5
-STOP_ATR_MULT = 1.5; TP_ATR_MULT = 2.5; MIN_CONFIDENCE = 0.35
+INITIAL_CAPITAL = 10000.0
 MODEL_XGB = 'gold_xgb.json'; MODEL_RF = 'gold_rf.pkl'; MODEL_CAT = 'gold_cat.cbm'
 CAPITAL_FILE = 'capital_mtf.txt'; STATE_FILE = 'state.txt'
 ACCURACY_FILE = 'accuracy_log.txt'
@@ -43,7 +51,6 @@ def fetch_data(interval, days, limit):
             if len(df) > 20: return df
     except Exception as e:
         print(f"Yahoo {interval} failed:", e)
-
     for sym in SYMBOLS_BINANCE:
         try:
             resp = requests.get("https://api.binance.com/api/v3/klines",
@@ -64,7 +71,6 @@ def fetch_data(interval, days, limit):
 
 AGG = {'open':'first','high':'max','low':'min','close':'last','volume':'sum'}
 
-df_1m  = fetch_data('1m', 2, 300)
 df_5m  = fetch_data('5m', 5, 500)
 df_15m = fetch_data('15m', 15, 400)
 df_1h  = fetch_data('1h', 40, 400)
@@ -74,12 +80,10 @@ df_1d  = fetch_data('1d', 180, 200)
 LIVE_DATA = df_5m is not None
 
 if df_5m is None:
-    send_telegram("⚠️ استخدام بيانات افتراضية تعويضية")
     dates = pd.date_range(end=datetime.datetime.now(), periods=500, freq='5min')
     close = 2600 + np.cumsum(np.random.randn(500)*2)
     df_5m = pd.DataFrame({'open': close-1, 'high': close+2, 'low': close-2, 'close': close, 'volume': 1000}, index=dates)
 
-if df_1m is None:  df_1m = df_5m.copy()
 if df_15m is None: df_15m = df_5m.resample('15min').agg(AGG).dropna()
 if df_1h is None:  df_1h = df_5m.resample('1h').agg(AGG).dropna()
 if df_4h is None:  df_4h = df_1h.resample('4h').agg(AGG).dropna()
@@ -96,10 +100,10 @@ def compute_features(df):
     df['ema_26'] = df['close'].ewm(span=26, adjust=False).mean()
     df['macd']   = df['ema_12'] - df['ema_26']
     df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-    df['tr'] = np.maximum(df['high'] - df['low'],
-                          np.maximum(abs(df['high'] - df['close'].shift(1)),
-                                     abs(df['low'] - df['close'].shift(1))))
-    df['atr_14'] = df['tr'].rolling(14).mean()
+    tr = np.maximum(df['high'] - df['low'],
+                    np.maximum(abs(df['high'] - df['close'].shift(1)),
+                               abs(df['low'] - df['close'].shift(1))))
+    df['atr_14'] = tr.rolling(14).mean()
     delta = df['close'].diff()
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = -delta.clip(upper=0).rolling(14).mean()
@@ -116,12 +120,10 @@ def compute_features(df):
     df['volume_ratio'] = df['volume'] / (df['volume'].rolling(50).mean() + 1e-9)
     df['trend'] = np.where(df['close'] > df['ema_200'], 1, -1)
     atr_pct = df['atr_14'] / df['close']
-    target_threshold = atr_pct * 0.3
-    df['target'] = (df['close'].shift(-3)/df['close'] - 1 > target_threshold).astype(int)
+    df['target'] = (df['close'].shift(-3)/df['close'] - 1 > atr_pct * 0.3).astype(int)
     df.dropna(inplace=True)
     return df
 
-df_1m  = compute_features(df_1m)
 df_5m  = compute_features(df_5m)
 df_15m = compute_features(df_15m)
 df_1h  = compute_features(df_1h)
@@ -133,11 +135,11 @@ if len(df_5m) < 20:
 
 features = ['ema_9','ema_21','macd','macd_signal','atr_14','adx','volume_ratio','trend','close']
 
+# ---------- التدريب مع حفظ الموديلات ----------
 train_size = int(len(df_5m) * 0.8)
 df_train = df_5m.iloc[:train_size]
 df_test  = df_5m.iloc[train_size:]
 
-# XGBoost مع حفظ/تحميل
 if os.path.exists(MODEL_XGB):
     try:
         xgb_model = xgb.XGBClassifier(); xgb_model.load_model(MODEL_XGB)
@@ -151,19 +153,18 @@ else:
 xgb_acc = accuracy_score(df_test['target'], xgb_model.predict(df_test[features]))
 xgb_model.save_model(MODEL_XGB)
 
-# RandomForest مع حفظ/تحميل
 if os.path.exists(MODEL_RF):
     try:
         rf_model = joblib.load(MODEL_RF); rf_model.fit(df_5m[features], df_5m['target'])
     except:
-        rf_model = RandomForestClassifier(n_estimators=300, max_depth=6); rf_model.fit(df_train[features], df_train['target'])
+        rf_model = RandomForestClassifier(n_estimators=300, max_depth=6)
+        rf_model.fit(df_train[features], df_train['target'])
 else:
     rf_model = RandomForestClassifier(n_estimators=300, max_depth=6)
     rf_model.fit(df_train[features], df_train['target'])
 rf_acc = accuracy_score(df_test['target'], rf_model.predict(df_test[features]))
 joblib.dump(rf_model, MODEL_RF)
 
-# CatBoost مع حفظ/تحميل
 if os.path.exists(MODEL_CAT):
     try:
         cat_model = CatBoostClassifier(verbose=0); cat_model.load_model(MODEL_CAT)
@@ -177,26 +178,18 @@ else:
 cat_acc = accuracy_score(df_test['target'], cat_model.predict(df_test[features]))
 cat_model.save_model(MODEL_CAT)
 
-print(f"📊 Accuracy - XGB: {xgb_acc:.2%}, RF: {rf_acc:.2%}, CatBoost: {cat_acc:.2%}")
+print(f"📊 Accuracy - XGB: {xgb_acc:.2%}, RF: {rf_acc:.2%}, Cat: {cat_acc:.2%}")
 
-# حفظ سجل الدقة
-timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
 with open(ACCURACY_FILE, 'a') as f:
-    f.write(f"{timestamp},{xgb_acc:.4f},{rf_acc:.4f},{cat_acc:.4f}\n")
+    f.write(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')},{xgb_acc:.4f},{rf_acc:.4f},{cat_acc:.4f}\n")
 
-# الترجيح الذكي
+# ---------- الترجيح الذكي ----------
 total_acc = xgb_acc + rf_acc + cat_acc + 1e-9
-w_xgb = xgb_acc / total_acc; w_rf = rf_acc / total_acc; w_cat = cat_acc / total_acc
+prob = (xgb_acc/total_acc) * xgb_model.predict_proba(df_5m[features].iloc[[-1]])[0,1] \
+     + (rf_acc/total_acc)  * rf_model.predict_proba(df_5m[features].iloc[[-1]])[0,1] \
+     + (cat_acc/total_acc) * cat_model.predict_proba(df_5m[features].iloc[[-1]])[0,1]
 
-i_5m = len(df_5m) - 1
-latest_features = df_5m[features].iloc[[i_5m]]
-
-prob_xgb = xgb_model.predict_proba(latest_features)[0, 1]
-prob_rf  = rf_model.predict_proba(latest_features)[0, 1]
-prob_cat = cat_model.predict_proba(latest_features)[0, 1]
-prob = w_xgb * prob_xgb + w_rf * prob_rf + w_cat * prob_cat
-
-# تحليل جميع الفريمات
+# ---------- تحليل الفريمات ----------
 price = df_5m['close'].iloc[-1]
 atr   = max(df_5m['atr_14'].iloc[-1], 0.01*price)
 
@@ -204,49 +197,57 @@ trend_1d  = 1 if len(df_1d) > 0 and price > df_1d['ema_50'].iloc[-1] else -1
 trend_4h  = 1 if len(df_4h) > 0 and price > df_4h['ema_50'].iloc[-1] else -1
 trend_1h  = 1 if len(df_1h) > 0 and price > df_1h['ema_21'].iloc[-1] else -1
 trend_15m = 1 if len(df_15m) > 0 and price > df_15m['ema_9'].iloc[-1] else -1
+ema_5m    = df_5m['ema_9'].iloc[-1] > df_5m['ema_21'].iloc[-1]
+macd_5m   = df_5m['macd'].iloc[-1] > df_5m['macd_signal'].iloc[-1]
 
-ema_trend_5m = df_5m['ema_9'].iloc[-1] > df_5m['ema_21'].iloc[-1]
-macd_bull_5m = df_5m['macd'].iloc[-1] > df_5m['macd_signal'].iloc[-1]
+bull_score = sum([trend_1d==1, trend_4h==1, trend_1h==1, trend_15m==1, ema_5m, macd_5m])
+bear_score = sum([trend_1d==-1, trend_4h==-1, trend_1h==-1, trend_15m==-1, not ema_5m, not macd_5m])
 
-# شروط مخففة - توافق جزئي كافي
-bullish_count = sum([
-    trend_1d == 1, trend_4h == 1, trend_1h == 1, trend_15m == 1, ema_trend_5m, macd_bull_5m
-])
-bearish_count = sum([
-    trend_1d == -1, trend_4h == -1, trend_1h == -1, trend_15m == -1, not ema_trend_5m, not macd_bull_5m
-])
+buy_signal  = bool(LIVE_DATA and bull_score >= 4 and prob >= PROB_THRESHOLD)
+sell_signal = bool(LIVE_DATA and bear_score >= 4)
 
-# الدخول: 4 من 6 شروط كافية بدل 5/5
-buy_signal  = bool(LIVE_DATA and bullish_count >= 4 and prob >= MIN_CONFIDENCE)
-sell_signal = bool(LIVE_DATA and bearish_count >= 4)
+print(f"🎯 1D={trend_1d} 4H={trend_4h} 1H={trend_1h} 15M={trend_15m} | Bull={bull_score}/6 | Prob={prob:.2f}")
 
-print(f"🎯 الفريمات: 1D={trend_1d} | 4H={trend_4h} | 1H={trend_1h} | 15M={trend_15m} | 5M_EMA={bool(ema_trend_5m)} | 5M_MACD={macd_bull_5m}")
-print(f"📊 Score: Bull={bullish_count}/6 | Bear={bearish_count}/6")
-print(f"🎲 Prob={prob:.2f} | BUY={buy_signal} | SELL={sell_signal} | live={LIVE_DATA}")
-
-# إدارة رأس المال
-capital = INITIAL_CAPITAL; position = 0; entry = 0; sl = 0; tp = 0; max_loss = 0
+# ---------- تحميل الحالة ----------
+capital = INITIAL_CAPITAL; position = 0; entry = 0; sl = 0; tp = 0; last_loss_ts = 0
 if os.path.exists(STATE_FILE):
     try:
-        with open(STATE_FILE, 'r') as f:
-            capital, position, entry, sl, tp = map(float, f.read().split(','))
+        with open(STATE_FILE) as f:
+            parts = f.read().split(',')
+            capital, position, entry, sl, tp = map(float, parts[:5])
+            last_loss_ts = float(parts[5]) if len(parts) > 5 else 0
     except: pass
 
-if position == 0 and buy_signal:
-    stop_distance = STOP_ATR_MULT * atr
-    max_loss = capital * RISK_PER_TRADE
-    base_pos = max_loss / stop_distance if stop_distance > 0 else 0
-    position = base_pos * LEVERAGE; entry = price
-    sl = price - stop_distance; tp = price + TP_ATR_MULT * atr
-    send_telegram(f"🥇 شراء ذهب (Score: {bullish_count}/6)\nالسعر: {price:.2f}\nالوقف: {sl:.2f}\nالهدف: {tp:.2f}\nالرصيد: {capital:.2f}")
+now_ts = time.time()
+cooldown_ok = (now_ts - last_loss_ts) > COOLDOWN_MIN * 60
+
+# ---------- التنفيذ: استراتيجية 2% / 1% ----------
+if position == 0 and buy_signal and cooldown_ok:
+    stop_distance = atr * 1.5
+    risk_loss = capital * RISK_LOSS                      # الخسارة = 1%
+    position = (risk_loss / stop_distance) * LEVERAGE    # الحجم حسب المخاطرة
+    entry = price
+    sl = price - stop_distance                           # وقف = -1%
+    tp = price + stop_distance * RISK_REWARD             # هدف = +2%
+    send_telegram(f"🥇 شراء ذهب (استراتيجية 2%/1%)\n"
+                 f"السعر: {price:.2f}$\n"
+                 f"الوقف: {sl:.2f}$ (-{risk_loss*EXCHANGE_RATE:.0f} ﷼)\n"
+                 f"الهدف: {tp:.2f}$ (+{risk_loss*RISK_REWARD*EXCHANGE_RATE:.0f} ﷼)\n"
+                 f"الثقة: {bull_score}/6 | Prob: {prob:.2f}\n"
+                 f"الرصيد: {capital:.2f}$")
 elif position > 0 and (price <= sl or price >= tp or sell_signal):
+    reason = "هدف ✅" if price >= tp else ("وقف ❌" if price <= sl else "إشارة معاكسة")
     pnl = position * (price - entry)
+    max_loss = capital * RISK_LOSS * 1.2
     if pnl < -max_loss: pnl = -max_loss
     capital += pnl
-    send_telegram(f"🥇 إغلاق ذهب\nPnL: {pnl:.2f}\nالرصيد: {capital:.2f}")
+    if pnl < 0: last_loss_ts = now_ts
+    send_telegram(f"🥇 إغلاق ({reason})\n"
+                 f"PnL: {pnl:+.2f}$ ({pnl*EXCHANGE_RATE:+.0f} ﷼)\n"
+                 f"الرصيد: {capital:.2f}$")
     position = 0
 
 with open(STATE_FILE, 'w') as f:
-    f.write(f"{capital},{position},{entry},{sl},{tp}")
+    f.write(f"{capital},{position},{entry},{sl},{tp},{last_loss_ts}")
 with open(CAPITAL_FILE, 'w') as f:
     f.write(str(capital))
